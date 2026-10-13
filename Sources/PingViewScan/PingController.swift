@@ -29,17 +29,22 @@ final class PingController: ObservableObject, @unchecked Sendable {
     // MARK: - Host management
 
     func addHosts(_ raw: String) {
-        let parts = raw
-            .split(whereSeparator: { ",;\n\t ".contains($0) })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        add(HostImport.parse(raw))
+    }
 
+    func addHosts(_ addresses: [String]) {
+        add(addresses)
+    }
+
+    private func add(_ addresses: [String]) {
         var added = 0
-        for part in parts {
-            if hosts.contains(where: { $0.address.caseInsensitiveCompare(part) == .orderedSame }) {
+        for address in addresses {
+            let value = address.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            if hosts.contains(where: { $0.address.caseInsensitiveCompare(value) == .orderedSame }) {
                 continue
             }
-            hosts.append(Host(address: part))
+            hosts.append(Host(address: value))
             added += 1
         }
 
@@ -145,7 +150,10 @@ final class PingController: ObservableObject, @unchecked Sendable {
         let sample = PingSample(id: UUID(), sequence: sequence, timestamp: Date(), rtt: outcome.rtt)
 
         var host = hosts[index]
-        if host.ip == nil, let ip = outcome.ip { host.ip = ip }
+        if host.ip == nil, let ip = outcome.ip {
+            host.ip = ip
+            resolveHostname(hostID: hostID, ip: ip)
+        }
         host.stats.add(rtt: outcome.rtt)
         hosts[index] = host
 
@@ -157,6 +165,17 @@ final class PingController: ObservableObject, @unchecked Sendable {
         recent.append(sample)
         if recent.count > recentLimit { recent.removeFirst(recent.count - recentLimit) }
         recentSamples[hostID] = recent
+    }
+
+    private func resolveHostname(hostID: UUID, ip: String) {
+        Task.detached { [weak self] in
+            let name = await ReverseDNS.lookup(ip)
+            guard let name, !name.isEmpty else { return }
+            DispatchQueue.main.async {
+                guard let self, let index = self.hosts.firstIndex(where: { $0.id == hostID }) else { return }
+                self.hosts[index].hostname = name
+            }
+        }
     }
 
     // MARK: - Reports

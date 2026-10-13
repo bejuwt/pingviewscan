@@ -59,6 +59,8 @@ struct ScanView: View {
                 Spacer()
 
                 Button(scan.isScanning ? "Stop" : "Scan") { scan.toggle() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(scan.isScanning ? .red : .green)
                     .keyboardShortcut("s", modifiers: [.command, .shift])
             }
         }

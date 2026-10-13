@@ -48,9 +48,66 @@ cp "$ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
 
-# Ad-hoc code signature so Gatekeeper / TCC is happy with a fresh build.
-codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || \
-    echo "warning: ad-hoc codesign failed (app will still run)"
+# --- Developer ID signing & notarization (only when credentials exist) ---
+# If a "Developer ID Application" certificate is in the keychain we sign with it
+# and notarize; otherwise we fall back to an ad-hoc signature.
+IDENTITY="${DEVELOPMENT_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | \
+        awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+fi
+
+if [ -n "$IDENTITY" ]; then
+    echo "==> Signing with: $IDENTITY"
+    rm -rf "$APP_DIR/Contents/_CodeSignature"
+    codesign --force --deep --timestamp --options runtime --sign "$IDENTITY" "$APP_DIR"
+    codesign --verify --deep --strict "$APP_DIR"
+else
+    echo "==> Signing ad-hoc (no Developer ID certificate found)"
+    codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || \
+        echo "warning: ad-hoc codesign failed (app will still run)"
+fi
+
+# Notarization accepts either an App Store Connect API key or Apple ID +
+# app-specific password. Both are read from the environment.
+NOTARY_KEY_ID="${NOTARY_KEY_ID:-}"
+NOTARY_ISSUER_ID="${NOTARY_ISSUER_ID:-}"
+NOTARY_KEY_PATH="${NOTARY_KEY_PATH:-}"
+NOTARY_APPLE_ID="${NOTARY_APPLE_ID:-}"
+NOTARY_APPLE_PASSWORD="${NOTARY_APPLE_PASSWORD:-}"
+NOTARY_TEAM_ID="${NOTARY_TEAM_ID:-}"
+
+DO_NOTARIZE=0
+NOTARY_ARGS=()
+if [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER_ID" ] && [ -n "$NOTARY_KEY_PATH" ]; then
+    NOTARY_ARGS=("--key-id" "$NOTARY_KEY_ID" "--issuer-id" "$NOTARY_ISSUER_ID" "--key" "$NOTARY_KEY_PATH")
+    DO_NOTARIZE=1
+elif [ -n "$NOTARY_APPLE_ID" ] && [ -n "$NOTARY_APPLE_PASSWORD" ] && [ -n "$NOTARY_TEAM_ID" ]; then
+    NOTARY_ARGS=("--apple-id" "$NOTARY_APPLE_ID" "--password" "$NOTARY_APPLE_PASSWORD" "--team-id" "$NOTARY_TEAM_ID")
+    DO_NOTARIZE=1
+fi
+
+if [ "$DO_NOTARIZE" = "1" ]; then
+    if [ -z "$IDENTITY" ]; then
+        echo "error: notary credentials provided but no Developer ID certificate found." >&2
+        echo "       Import your Developer ID Application certificate into the keychain first." >&2
+    else
+        echo "==> Notarizing…"
+        ZIP_TMP="$(mktemp -d)"
+        ditto -c -k --keepParent "$APP_DIR" "$ZIP_TMP/PingViewScan-notary.zip"
+        if /usr/bin/xcrun notarytool submit "$ZIP_TMP/PingViewScan-notary.zip" \
+                "${NOTARY_ARGS[@]}" --wait --output-format json; then
+            echo "==> Stapling…"
+            /usr/bin/xcrun stapler staple "$APP_DIR"
+        else
+            echo "error: notarization failed" >&2
+        fi
+        rm -rf "$ZIP_TMP"
+    fi
+elif [ -n "$IDENTITY" ]; then
+    echo "warning: signed but NOT notarized — set NOTARY_KEY_ID/NOTARY_ISSUER_ID/NOTARY_KEY_PATH"
+    echo "         (or NOTARY_APPLE_ID/NOTARY_APPLE_PASSWORD/NOTARY_TEAM_ID) to notarize."
+fi
 
 echo "==> Done: $APP_DIR"
 echo "    Open with: open \"$APP_DIR\""

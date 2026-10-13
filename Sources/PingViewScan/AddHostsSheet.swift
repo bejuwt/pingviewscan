@@ -1,17 +1,17 @@
 import SwiftUI
+import AppKit
 
-/// Modal sheet for entering many hosts at once, one per line.
+/// Modal sheet for entering many hosts at once, one per line. Pastes from
+/// spreadsheets (tabs/CRLF) are handled by `HostImport`.
 struct AddHostsSheet: View {
     @ObservedObject var controller: PingController
     @Environment(\.dismiss) private var dismiss
 
     @State private var text = ""
+    @State private var onlyValid = true
 
-    private var entries: [String] {
-        text.split(whereSeparator: { ",;\n\t ".contains($0) })
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
+    private var entries: [String] { HostImport.parse(text, filterInvalid: onlyValid) }
+    private var totalFields: Int { HostImport.parse(text, filterInvalid: false).count }
 
     private var existingCount: Int {
         entries.filter { entry in
@@ -24,7 +24,7 @@ struct AddHostsSheet: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Add Hosts")
                     .font(.headline)
-                Text("Enter one host name or IP address per line.")
+                Text("Enter one host name or IP address per line, or paste a column straight from Excel.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -51,17 +51,28 @@ struct AddHostsSheet: View {
             }
 
             HStack {
+                Toggle("Only valid IP / hostnames", isOn: $onlyValid)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+
                 Text(statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
+                Button {
+                    pasteFromClipboard()
+                } label: {
+                    Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
+                }
+                .disabled(!pasteboardHasText)
+
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
 
                 Button(addTitle) {
-                    controller.addHosts(text)
+                    controller.addHosts(entries)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -72,12 +83,29 @@ struct AddHostsSheet: View {
         .frame(minWidth: 500)
     }
 
+    private var pasteboardHasText: Bool {
+        NSPasteboard.general.string(forType: .string)?.isEmpty == false
+    }
+
+    private func pasteFromClipboard() {
+        guard let clip = NSPasteboard.general.string(forType: .string), !clip.isEmpty else { return }
+        if text.isEmpty || text.hasSuffix("\n") {
+            text += clip
+        } else {
+            text += "\n" + clip
+        }
+    }
+
     private var statusText: String {
         let count = entries.count
         guard count > 0 else { return "No hosts entered" }
         var parts = ["\(count) host\(count == 1 ? "" : "s") entered"]
         if existingCount > 0 {
             parts.append("\(existingCount) already added")
+        }
+        if onlyValid {
+            let skipped = totalFields - count
+            if skipped > 0 { parts.append("\(skipped) filtered out") }
         }
         return parts.joined(separator: " · ")
     }

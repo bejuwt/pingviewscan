@@ -119,9 +119,18 @@ struct MonitorView: View {
             }
             .width(min: 110, ideal: 150)
 
-            TableColumn("Sent") { Text("\($0.stats.sent)") }.width(56)
-            TableColumn("Recv") { Text("\($0.stats.received)") }.width(56)
-            TableColumn("Lost") { Text("\($0.stats.lost)") }.width(56)
+            TableColumn("Hostname") { host in
+                Text(host.hostname ?? "—")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .width(min: 140, ideal: 200)
+
+            TableColumn("Sent / Recv / Lost") { host in
+                Text("\(host.stats.sent) / \(host.stats.received) / \(host.stats.lost)")
+                    .font(.system(.body, design: .monospaced))
+            }
+            .width(min: 120, ideal: 140)
 
             TableColumn("Loss %") { host in
                 Text(String(format: "%.1f%%", host.stats.lossPercent))
@@ -129,10 +138,13 @@ struct MonitorView: View {
             }
             .width(64)
 
-            TableColumn("Last") { Text(formatRTT($0.stats.last)) }.width(70)
-            TableColumn("Min") { Text(formatRTT($0.stats.minRtt)) }.width(70)
+            TableColumn("Last / Min / Max") { host in
+                Text("\(formatRTT(host.stats.last)) / \(formatRTT(host.stats.minRtt)) / \(formatRTT(host.stats.maxRtt))")
+                    .font(.system(.body, design: .monospaced))
+            }
+            .width(min: 150, ideal: 180)
+
             TableColumn("Avg") { Text(formatRTT($0.stats.avgRtt)) }.width(70)
-            TableColumn("Max") { Text(formatRTT($0.stats.maxRtt)) }.width(70)
         }
         .frame(minHeight: 220)
         .overlay {

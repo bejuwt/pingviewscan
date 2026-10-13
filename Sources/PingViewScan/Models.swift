@@ -45,6 +45,7 @@ struct Host: Identifiable {
     let id: UUID
     var address: String
     var ip: String?
+    var hostname: String?
     var stats = HostStats()
     var enabled = true
 
