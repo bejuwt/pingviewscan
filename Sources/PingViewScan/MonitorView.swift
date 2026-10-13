@@ -47,6 +47,8 @@ struct MonitorView: View {
             Button(controller.isRunning ? "Stop" : "Start") {
                 controller.toggle()
             }
+            .buttonStyle(.borderedProminent)
+            .tint(controller.isRunning ? .red : .green)
             .keyboardShortcut(.return, modifiers: [.command])
             .help("Start or stop pinging (⌘↩)")
 
