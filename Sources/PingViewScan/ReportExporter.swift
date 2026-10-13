@@ -207,9 +207,14 @@ enum ReportExporter {
     }
 
     private static func csvField(_ value: String) -> String {
-        if value.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" }) {
-            return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        var field = value
+        // Neutralise spreadsheet formula injection (cells starting with = + - @).
+        if let first = field.first, "=+-@\t\r".contains(first) {
+            field = "'" + field
         }
-        return value
+        if field.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" }) {
+            return "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        return field
     }
 }

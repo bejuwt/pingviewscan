@@ -207,7 +207,7 @@ final class ScanController: ObservableObject, @unchecked Sendable {
         for result in results {
             let ping = result.pingMs.map { String(format: "%.1f", $0) } ?? ""
             let ports = result.openPorts.map(String.init).joined(separator: " ")
-            lines.append("\(result.ip),\(csvField(result.hostname ?? "")),\(result.isAlive ? "1" : "0"),\(ping),\(ports)")
+            lines.append("\(csvField(result.ip)),\(csvField(result.hostname ?? "")),\(result.isAlive ? "1" : "0"),\(ping),\(ports)")
         }
         return lines.joined(separator: "\n") + "\n"
     }
@@ -229,9 +229,14 @@ final class ScanController: ObservableObject, @unchecked Sendable {
     }
 
     private func csvField(_ value: String) -> String {
-        value.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" })
-            ? "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-            : value
+        var field = value
+        // Neutralise spreadsheet formula injection (cells starting with = + - @).
+        if let first = field.first, "=+-@\t\r".contains(first) {
+            field = "'" + field
+        }
+        return field.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" })
+            ? "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            : field
     }
 
     private static func timestamp() -> String {

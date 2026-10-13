@@ -15,12 +15,20 @@ enum PingRunner {
 
     /// Blocking ping. Always call from a background thread / async context.
     static func ping(host: String, timeout: Double) -> PingOutcome {
+        // Guard against argument injection: a value beginning with "-" would be
+        // parsed by ping's getopt as an option (e.g. "-f" flood).
+        let target = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty, !target.hasPrefix("-") else {
+            return PingOutcome(rtt: nil, ip: nil,
+                               output: "Refused invalid host: \(host)")
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/sbin/ping")
 
         // macOS ping uses milliseconds for -W (time to wait for a reply).
         let waitMs = max(100, Int((timeout * 1000).rounded()))
-        process.arguments = ["-c", "1", "-n", "-W", "\(waitMs)", host]
+        process.arguments = ["-c", "1", "-n", "-W", "\(waitMs)", target]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -45,7 +53,7 @@ enum PingRunner {
         watchdog.cancel()
 
         let output = String(data: data, encoding: .utf8) ?? ""
-        return PingOutcome(rtt: parseRTT(output), ip: parseIP(output, host: host), output: output)
+        return PingOutcome(rtt: parseRTT(output), ip: parseIP(output, host: target), output: output)
     }
 
     /// Async wrapper that runs the blocking ping off the caller's executor.
