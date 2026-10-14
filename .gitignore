@@ -9,5 +9,8 @@
 # Assembled app bundles
 *.app/
 
+# Release artifacts
+*.zip
+
 # Xcode
 DerivedData/
