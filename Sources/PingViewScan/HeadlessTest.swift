@@ -208,42 +208,71 @@ enum HeadlessTest {
                  maxHops: value("--max-hops").flatMap(Int.init) ?? 30,
                  queries: value("--queries").flatMap(Int.init) ?? 3,
                  timeout: value("--trace-timeout").flatMap(Double.init) ?? 2,
+                 rounds: value("--rounds").flatMap(Int.init) ?? 1,
+                 interval: value("--interval").flatMap(Double.init) ?? 2,
                  reportPath: value("--report"),
                  csvPath: value("--csv"))
         return true
     }
 
     private static func runTrace(target: String, maxHops: Int, queries: Int,
-                                 timeout: Double, reportPath: String?, csvPath: String?) {
+                                 timeout: Double, rounds: Int, interval: Double,
+                                 reportPath: String?, csvPath: String?) {
         let controller = TracerouteController()
         controller.target = target
         controller.maxHops = maxHops
         controller.queries = queries
         controller.timeout = timeout
+        controller.interval = interval
 
         print("PingViewScan headless traceroute")
         print("  target:  \(target)")
         print("  max:     \(maxHops) hops   probes: \(queries)   timeout: \(timeout)s")
+        if rounds > 1 { print("  mode:    continuous, \(rounds) rounds (every \(interval)s)") }
         print("")
 
-        controller.start()
+        if rounds > 1 {
+            controller.setContinuous(true)
+        } else {
+            controller.start()
+        }
 
         let keepAlive = Timer(timeInterval: 0.05, repeats: true) { _ in }
         RunLoop.main.add(keepAlive, forMode: .common)
 
-        var emitted = 0
-        while controller.isRunning {
+        let targetRounds = max(1, rounds)
+        var lastRounds = 0
+        while controller.isRunning && controller.rounds < targetRounds {
             RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-            if controller.hops.count != emitted {
-                emitted = controller.hops.count
-                if let hop = controller.hops.last {
-                    let rtt = hop.minRtt.map { String(format: "%6.1f ms", $0) } ?? "  timeout "
-                    print(String(format: "  %2d  %-40@ %@", hop.ttl, hop.displayHost as NSString, rtt))
-                }
+            if controller.rounds != lastRounds {
+                lastRounds = controller.rounds
+                let responded = controller.hops.filter { !$0.isTimeout }.count
+                print("  round \(lastRounds): \(controller.hops.count) hop(s), \(responded) responding")
             }
         }
+        if controller.isRunning { controller.stop() }
         keepAlive.invalidate()
 
+        print("")
+        print("Aggregated per-hop latency (\(controller.rounds) pass(es)):")
+        let widths = [3, 38, 5, 5, 6, 8, 8, 8, 8]
+        func line(_ cells: [String]) -> String {
+            var out = ""
+            for (index, cell) in cells.enumerated() {
+                let width = index < widths.count ? widths[index] : 8
+                out += index == 0 ? pad(cell, width) : " " + pad(cell, width, right: index >= 2)
+            }
+            return out
+        }
+        print(line(["#", "Host", "Sent", "Recv", "Loss%", "Min", "Avg", "Max", "Last"]))
+        print(String(repeating: "-", count: 2 + widths.reduce(0, +) + widths.count))
+        for stat in controller.stats {
+            let raw = stat.displayHost
+            let host = raw.count > 38 ? String(raw.prefix(37)) + "\u{2026}" : raw
+            print(line(["\(stat.ttl)", host, "\(stat.sent)", "\(stat.received)",
+                        String(format: "%.1f", stat.lossPercent),
+                        ms(stat.minRtt), ms(stat.avgRtt), ms(stat.maxRtt), ms(stat.lastRtt)]))
+        }
         print("")
         print(controller.message)
 

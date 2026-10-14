@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 /// Fourth tab: a graphical traceroute tool.
 struct TracerouteView: View {
@@ -9,6 +10,8 @@ struct TracerouteView: View {
             controls
             Divider()
             pathSection
+            Divider()
+            chartSection
             Divider()
             hopTable
         }
@@ -36,6 +39,21 @@ struct TracerouteView: View {
                 ), options: [1, 2, 3, 5], suffix: "")
 
                 picker("Timeout", selection: $trace.timeout, options: [1, 2, 3, 5], suffix: "s")
+
+                Toggle(isOn: Binding(
+                    get: { trace.continuous },
+                    set: { trace.setContinuous($0) }
+                )) {
+                    Text("Continuous").font(.caption)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .help("Repeat the trace automatically and aggregate min/avg/max latency per hop")
+
+                if trace.continuous {
+                    picker("Every", selection: $trace.interval,
+                           options: [2, 5, 10, 30, 60], suffix: "s")
+                }
 
                 Spacer()
 
@@ -188,6 +206,69 @@ struct TracerouteView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(width: 120)
+    }
+
+    // MARK: - Chart
+
+    private var chartSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Latency per hop — min / avg / max")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if trace.rounds > 1 {
+                    Text("· \(trace.rounds) passes")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+
+            if trace.stats.isEmpty {
+                Text("No latency data yet — run a trace to see min / avg / max per hop.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+            } else {
+                Chart(latencyBars) { bar in
+                    BarMark(
+                        x: .value("Hop", bar.hop),
+                        y: .value("Latency (ms)", bar.value)
+                    )
+                    .foregroundStyle(by: .value("Metric", bar.metric))
+                    .position(by: .value("Metric", bar.metric))
+                }
+                .chartForegroundStyleScale([
+                    "Min": Color(red: 0.09, green: 0.64, blue: 0.29),
+                    "Avg": Color(red: 0.85, green: 0.47, blue: 0.02),
+                    "Max": Color(red: 0.86, green: 0.15, blue: 0.15)
+                ])
+                .chartLegend(position: .top, alignment: .trailing)
+                .chartYAxisLabel("ms")
+                .frame(height: 160)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private struct LatencyBar: Identifiable {
+        let hop: String
+        let metric: String
+        let value: Double
+        var id: String { "\(hop)-\(metric)" }
+    }
+
+    private var latencyBars: [LatencyBar] {
+        trace.stats.flatMap { stat -> [LatencyBar] in
+            let hop = "\(stat.ttl)"
+            var bars: [LatencyBar] = []
+            if let value = stat.minRtt { bars.append(LatencyBar(hop: hop, metric: "Min", value: value)) }
+            if let value = stat.avgRtt { bars.append(LatencyBar(hop: hop, metric: "Avg", value: value)) }
+            if let value = stat.maxRtt { bars.append(LatencyBar(hop: hop, metric: "Max", value: value)) }
+            return bars
+        }
     }
 
     // MARK: - Table

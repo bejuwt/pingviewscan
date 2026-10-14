@@ -8,7 +8,7 @@ enum TracerouteReportExporter {
 
     static func html(_ report: TracerouteReport) -> String {
         let path = hopPathSVG(report)
-        let latencyChart = latencyBars(report)
+        let latencyChart = latencyGroupedBars(report)
         let hopRows = report.hops.map { hop -> String in
             let status = hop.isTimeout
                 ? "<span class=\"muted\">no response</span>"
@@ -33,6 +33,24 @@ enum TracerouteReportExporter {
         let reachedBadge = report.reachedTarget
             ? "<span class=\"good\">reached</span>"
             : "<span class=\"muted\">not reached within \(report.maxHops) hops</span>"
+
+        let passesCard = report.rounds > 1
+            ? "<div class=\"card\"><div class=\"label\">Passes</div><div class=\"value\">\(report.rounds)</div></div>"
+            : ""
+
+        let aggregatePanel = report.rounds > 1 ? """
+          <div class="panel">
+            <h2>Aggregated per hop (\(report.rounds) passes)</h2>
+            <table>
+              <thead>
+                <tr><th>#</th><th>Host</th><th>IP</th><th>Sent</th><th>Recv</th><th>Lost</th><th>Loss %</th><th>Last</th><th>Min</th><th>Avg</th><th>Max</th></tr>
+              </thead>
+              <tbody>
+        \(aggregateRows(report))
+              </tbody>
+            </table>
+          </div>
+        """ : ""
 
         return """
         <!DOCTYPE html>
@@ -75,7 +93,7 @@ enum TracerouteReportExporter {
         <body>
         <div class="wrap">
           <h1>PingViewScan Traceroute Report</h1>
-          <div class="sub">Target \(SVG.escape(report.target.isEmpty ? "—" : report.target))\(report.resolvedIP.map { " (\(SVG.escape($0)))" } ?? "") · Generated \(ReportExporter.dateTime(report.generated)) · Max hops \(report.maxHops) · Probes/hop \(report.queries) · Timeout \(String(format: "%g", report.timeout))s</div>
+          <div class="sub">Target \(SVG.escape(report.target.isEmpty ? "—" : report.target))\(report.resolvedIP.map { " (\(SVG.escape($0)))" } ?? "") · Generated \(ReportExporter.dateTime(report.generated)) · Max hops \(report.maxHops) · Probes/hop \(report.queries) · Timeout \(String(format: "%g", report.timeout))s\(report.rounds > 1 ? " · \(report.rounds) passes" : "")</div>
 
           <div class="cards">
             <div class="card"><div class="label">Hops</div><div class="value">\(report.hops.count)</div></div>
@@ -86,10 +104,12 @@ enum TracerouteReportExporter {
             <div class="card"><div class="label">Duration</div><div class="value" style="font-size:15px">\(ReportExporter.durationString(report.duration))</div></div>
             <div class="card"><div class="label">Resolved IP</div><div class="value" style="font-size:15px">\(report.resolvedIP.map(SVG.escape) ?? "—")</div></div>
             <div class="card"><div class="label">Started</div><div class="value" style="font-size:15px">\(report.started.map(ReportExporter.dateTime) ?? "—")</div></div>
+            \(passesCard)
           </div>
 
           <div class="panel chart">\(path)</div>
           <div class="panel chart">\(latencyChart)</div>
+          \(aggregatePanel)
 
           <div class="panel">
             <h2>Hops (\(report.hops.count))</h2>
@@ -114,19 +134,19 @@ enum TracerouteReportExporter {
 
     static func csv(_ report: TracerouteReport) -> String {
         var lines = ["Hop,Host,IP,Sent,Received,Lost,Loss_percent,Last_ms,Min_ms,Avg_ms,Max_ms"]
-        for hop in report.hops {
+        for stat in report.statsOrHops {
             lines.append([
-                "\(hop.ttl)",
-                csvField(hop.host ?? ""),
-                csvField(hop.ip ?? ""),
-                "\(hop.sent)",
-                "\(hop.received)",
-                "\(hop.timeouts)",
-                num(hop.lossPercent),
-                hop.lastRtt.map { String(format: "%.3f", $0) } ?? "",
-                hop.minRtt.map { String(format: "%.3f", $0) } ?? "",
-                hop.avgRtt.map { String(format: "%.3f", $0) } ?? "",
-                hop.maxRtt.map { String(format: "%.3f", $0) } ?? ""
+                "\(stat.ttl)",
+                csvField(stat.host ?? ""),
+                csvField(stat.ip ?? ""),
+                "\(stat.sent)",
+                "\(stat.received)",
+                "\(stat.timeouts)",
+                num(stat.lossPercent),
+                stat.lastRtt.map { String(format: "%.3f", $0) } ?? "",
+                stat.minRtt.map { String(format: "%.3f", $0) } ?? "",
+                stat.avgRtt.map { String(format: "%.3f", $0) } ?? "",
+                stat.maxRtt.map { String(format: "%.3f", $0) } ?? ""
             ].joined(separator: ","))
         }
         return lines.joined(separator: "\n") + "\n"
@@ -198,22 +218,114 @@ enum TracerouteReportExporter {
         return svg
     }
 
-    private static func latencyBars(_ report: TracerouteReport) -> String {
-        let responding = report.hops.filter { !$0.isTimeout }
-        guard !responding.isEmpty else {
-            return SVG.barChart(width: 1020, height: 240, title: "Latency by hop",
-                                bars: [], yLabel: "Latency (ms)")
+    /// Grouped min / avg / max bars per hop, drawn as inline SVG.
+    private static func latencyGroupedBars(_ report: TracerouteReport) -> String {
+        let stats = report.statsOrHops.filter { $0.minRtt != nil }
+        let metrics: [(String, String)] = [("Min", "#16a34a"), ("Avg", "#d97706"), ("Max", "#dc2626")]
+
+        let width = 1020.0
+        let height = 340.0
+        let marginLeft = 68.0
+        let marginRight = 24.0
+        let marginTop = 52.0
+        let marginBottom = 132.0
+        let plotWidth = max(10, width - marginLeft - marginRight)
+        let plotHeight = max(10, height - marginTop - marginBottom)
+
+        func value(_ stat: HopLatencyStats, _ index: Int) -> Double? {
+            switch index {
+            case 0: return stat.minRtt
+            case 1: return stat.avgRtt
+            default: return stat.maxRtt
+            }
         }
-        let bars = responding.map { hop -> (label: String, value: Double, color: String) in
-            let label = hop.ip.map { "\(hop.ttl). \($0)" } ?? "\(hop.ttl)"
-            return (label: label, value: hop.minRtt ?? 0, color: hop.latencyLevel.hex)
+
+        let maxValue = SVG.niceMax(max(stats.flatMap { [ $0.minRtt, $0.avgRtt, $0.maxRtt ].compactMap { $0 } }.max() ?? 1, 0.0001))
+
+        func yFor(_ v: Double) -> Double { marginTop + (1 - min(max(v / maxValue, 0), 1)) * plotHeight }
+
+        var svg = "<svg viewBox=\"0 0 \(fmt(width)) \(fmt(height))\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" font-family=\"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif\">"
+        svg += "<rect x=\"0\" y=\"0\" width=\"\(fmt(width))\" height=\"\(fmt(height))\" fill=\"#ffffff\"/>"
+        svg += "<text x=\"\(fmt(marginLeft))\" y=\"26\" font-size=\"16\" font-weight=\"600\" fill=\"#111827\">Latency per hop — min / avg / max</text>"
+
+        // Legend.
+        var legendX = width - marginRight
+        for (name, color) in metrics.reversed() {
+            legendX -= 54
+            svg += "<rect x=\"\(fmt(legendX))\" y=\"16\" width=\"12\" height=\"12\" rx=\"3\" fill=\"\(color)\"/>"
+            svg += "<text x=\"\(fmt(legendX + 17))\" y=\"26\" font-size=\"12\" fill=\"#374151\">\(name)</text>"
         }
-        return SVG.barChart(width: 1020, height: 320, title: "Latency by hop (best probe)",
-                            bars: bars, yLabel: "Latency (ms)",
-                            rotateLabels: bars.count > 6, valueSuffix: "")
+
+        // Y grid.
+        let ySteps = 5
+        for step in 0...ySteps {
+            let v = maxValue * Double(step) / Double(ySteps)
+            let y = yFor(v)
+            svg += "<line x1=\"\(fmt(marginLeft))\" y1=\"\(fmt(y))\" x2=\"\(fmt(marginLeft + plotWidth))\" y2=\"\(fmt(y))\" stroke=\"#eef0f3\"/>"
+            svg += "<text x=\"\(fmt(marginLeft - 10))\" y=\"\(fmt(y + 4))\" font-size=\"11\" fill=\"#6b7280\" text-anchor=\"end\">\(tickLabel(v, span: maxValue))</text>"
+        }
+        svg += "<line x1=\"\(fmt(marginLeft))\" y1=\"\(fmt(marginTop))\" x2=\"\(fmt(marginLeft))\" y2=\"\(fmt(marginTop + plotHeight))\" stroke=\"#9ca3af\"/>"
+        svg += "<line x1=\"\(fmt(marginLeft))\" y1=\"\(fmt(marginTop + plotHeight))\" x2=\"\(fmt(marginLeft + plotWidth))\" y2=\"\(fmt(marginTop + plotHeight))\" stroke=\"#9ca3af\"/>"
+        svg += "<text transform=\"translate(18 \(fmt(marginTop + plotHeight / 2))) rotate(-90)\" font-size=\"12\" fill=\"#374151\" text-anchor=\"middle\">Latency (ms)</text>"
+
+        guard !stats.isEmpty else {
+            svg += "<text x=\"\(fmt(marginLeft + plotWidth / 2))\" y=\"\(fmt(marginTop + plotHeight / 2))\" font-size=\"13\" fill=\"#9ca3af\" text-anchor=\"middle\">No responding hops.</text>"
+            svg += "</svg>"
+            return svg
+        }
+
+        let slot = plotWidth / Double(stats.count)
+        let groupWidth = min(slot * 0.72, 96)
+        let barWidth = groupWidth / 3
+
+        for (index, stat) in stats.enumerated() {
+            let centerX = marginLeft + slot * (Double(index) + 0.5)
+            for (mIndex, metric) in metrics.enumerated() {
+                guard let v = value(stat, mIndex) else { continue }
+                let x = centerX - groupWidth / 2 + barWidth * Double(mIndex)
+                let top = yFor(v)
+                let barHeight = marginTop + plotHeight - top
+                svg += "<rect x=\"\(fmt(x))\" y=\"\(fmt(top))\" width=\"\(fmt(barWidth - 1.5))\" height=\"\(fmt(max(0, barHeight)))\" rx=\"2\" fill=\"\(metric.1)\"/>"
+            }
+            let label = stat.ip.map { "\(stat.ttl). \($0)" } ?? "\(stat.ttl)"
+            svg += "<text transform=\"translate(\(fmt(centerX)) \(fmt(marginTop + plotHeight + 6))) rotate(-60)\" text-anchor=\"end\" font-size=\"10\" fill=\"#6b7280\">\(SVG.escape(truncate(label, 22)))</text>"
+        }
+
+        svg += "</svg>"
+        return svg
+    }
+
+    /// Rows for the aggregated (multi-pass) table.
+    private static func aggregateRows(_ report: TracerouteReport) -> String {
+        report.statsOrHops.map { stat -> String in
+            let status = stat.minRtt == nil
+                ? "<span class=\"muted\">no response</span>"
+                : "<span class=\"good\">\(SVG.escape(stat.displayHost))</span>"
+            return """
+            <tr>
+              <td class="mono">\(stat.ttl)</td>
+              <td>\(status)</td>
+              <td class="mono">\(SVG.escape(stat.ip ?? "—"))</td>
+              <td>\(stat.sent)</td>
+              <td>\(stat.received)</td>
+              <td>\(stat.timeouts)</td>
+              <td class="\(stat.lossPercent > 0 ? "bad" : "")">\(ms(stat.lossPercent))%</td>
+              <td class="mono">\(ms(stat.lastRtt))</td>
+              <td class="mono">\(ms(stat.minRtt))</td>
+              <td class="mono">\(ms(stat.avgRtt))</td>
+              <td class="mono">\(ms(stat.maxRtt))</td>
+            </tr>
+            """
+        }.joined(separator: "\n")
     }
 
     // MARK: - Helpers
+
+    private static func tickLabel(_ value: Double, span: Double) -> String {
+        if span >= 20 { return String(format: "%.0f", value) }
+        if span >= 5 { return String(format: "%.1f", value) }
+        return String(format: "%.2f", value)
+    }
 
     private static func shortHost(_ hop: TracerouteHop) -> String {
         hop.host ?? hop.ip ?? "*"
