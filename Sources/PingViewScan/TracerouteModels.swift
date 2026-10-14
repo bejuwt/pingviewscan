@@ -44,6 +44,68 @@ struct TracerouteHop: Identifiable, Hashable {
     }
 }
 
+/// Per-hop latency aggregated across one or more traceroute passes. In
+/// continuous mode a new `TracerouteHop` is merged in on every pass so the
+/// min/avg/max reflect the whole session rather than a single trace.
+struct HopLatencyStats: Identifiable, Hashable {
+    let ttl: Int
+    var host: String?
+    var ip: String?
+    /// Probes that received a response (across all passes).
+    private(set) var sampleCount: Int = 0
+    private(set) var sumRtt: Double = 0
+    private(set) var minRtt: Double?
+    private(set) var maxRtt: Double?
+    /// Most recent successful probe round-trip time.
+    private(set) var lastRtt: Double?
+    /// Probes sent to this hop (responded + timed out) across all passes.
+    private(set) var sent: Int = 0
+    private(set) var timeouts: Int = 0
+
+    init(ttl: Int) { self.ttl = ttl }
+
+    /// Build a single-pass aggregate from a hop (handy for reports).
+    init(hop: TracerouteHop) {
+        self.init(ttl: hop.ttl)
+        merge(hop)
+    }
+
+    var id: Int { ttl }
+    var received: Int { sampleCount }
+    var avgRtt: Double? { sampleCount > 0 ? sumRtt / Double(sampleCount) : nil }
+    var lossPercent: Double { sent > 0 ? Double(timeouts) / Double(sent) * 100 : (sampleCount == 0 ? 100 : 0) }
+
+    var displayHost: String {
+        if let host, !host.isEmpty, host != ip { return host }
+        return ip ?? "*"
+    }
+
+    var latencyLevel: LatencyLevel {
+        guard let rtt = minRtt else { return .timedOut }
+        switch rtt {
+        case ..<30: return .fast
+        case ..<80: return .moderate
+        case ..<150: return .slow
+        default: return .verySlow
+        }
+    }
+
+    /// Fold one pass's hop results into the running aggregate.
+    mutating func merge(_ hop: TracerouteHop) {
+        if let value = hop.host, !value.isEmpty { host = value }
+        if let value = hop.ip { ip = value }
+        for rtt in hop.rtts {
+            sampleCount += 1
+            sumRtt += rtt
+            minRtt = min(minRtt ?? rtt, rtt)
+            maxRtt = max(maxRtt ?? rtt, rtt)
+        }
+        if let value = hop.rtts.last { lastRtt = value }
+        sent += hop.sent
+        timeouts += hop.timeouts
+    }
+}
+
 /// Speed buckets shared between the on-screen path and the HTML report.
 enum LatencyLevel {
     case timedOut, fast, moderate, slow, verySlow
@@ -80,11 +142,20 @@ struct TracerouteReport {
     let queries: Int
     let timeout: Double
     let hops: [TracerouteHop]
+    /// Aggregated per-hop latency across all passes of the session.
+    var stats: [HopLatencyStats] = []
+    /// Number of completed passes (1 for a single trace).
+    var rounds: Int = 1
 
     var respondedHops: [TracerouteHop] { hops.filter { !$0.isTimeout } }
     var timeoutCount: Int { hops.reduce(0) { $0 + $1.timeouts } }
     var probeCount: Int { hops.reduce(0) { $0 + $1.sent } }
     var duration: TimeInterval { (finished ?? Date()).timeIntervalSince(started ?? generated) }
+
+    /// Aggregated stats if present, otherwise a one-pass view of the hops.
+    var statsOrHops: [HopLatencyStats] {
+        stats.isEmpty ? hops.map(HopLatencyStats.init(hop:)) : stats
+    }
 
     var reachedTarget: Bool {
         guard let ip = resolvedIP else { return false }

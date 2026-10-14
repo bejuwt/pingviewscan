@@ -13,14 +13,26 @@ final class TracerouteController: ObservableObject, @unchecked Sendable {
     @Published var queries: Int = 3
     @Published var timeout: Double = 2
 
+    /// When on, the trace restarts automatically after each pass.
+    @Published var continuous = false
+    /// Seconds to wait between passes in continuous mode.
+    @Published var interval: Double = 5
+
     @Published private(set) var hops: [TracerouteHop] = []
     @Published private(set) var isRunning = false
     @Published private(set) var resolvedIP: String?
     @Published private(set) var message = "Enter a host or IP address and press Trace."
     @Published private(set) var startedAt: Date?
     @Published private(set) var finishedAt: Date?
+    /// Number of completed passes (grows in continuous mode).
+    @Published private(set) var rounds = 0
+    /// Per-hop min/avg/max aggregated across all passes so far.
+    @Published private(set) var stats: [HopLatencyStats] = []
 
     private var task: Task<Void, Never>?
+    private var pauseItem: DispatchWorkItem?
+    private var statsStore: [Int: HopLatencyStats] = [:]
+    private var runToken = UUID()
 
     private(set) var tracedTarget = ""
 
@@ -40,13 +52,67 @@ final class TracerouteController: ObservableObject, @unchecked Sendable {
         }
 
         hops = []
+        stats = []
+        statsStore = [:]
+        rounds = 0
         resolvedIP = nil
         tracedTarget = host
-        isRunning = true
         startedAt = Date()
         finishedAt = nil
+        runToken = UUID()
         message = "Tracing route to \(host)…"
 
+        launchPass(host: host, token: runToken)
+    }
+
+    /// Turn continuous mode on/off. Enabling it starts a session if idle;
+    /// disabling it lets an in-flight pass finish, or stops immediately if the
+    /// loop is between passes.
+    func setContinuous(_ on: Bool) {
+        continuous = on
+        if on {
+            if !isRunning { start() }
+        } else if task == nil {
+            // We're in the pause between passes — stop right away.
+            pauseItem?.cancel()
+            pauseItem = nil
+            isRunning = false
+            finishedAt = Date()
+            message = "Continuous tracing stopped after \(rounds) round(s)."
+        }
+    }
+
+    func stop() {
+        runToken = UUID()
+        task?.cancel()
+        task = nil
+        pauseItem?.cancel()
+        pauseItem = nil
+        continuous = false
+        isRunning = false
+        finishedAt = Date()
+        message = "Stopped — \(rounds) round(s), \(hops.count) hop(s) traced."
+    }
+
+    func toggle() { isRunning ? stop() : start() }
+
+    func clear() {
+        guard !isRunning else { return }
+        hops = []
+        stats = []
+        statsStore = [:]
+        rounds = 0
+        resolvedIP = nil
+        startedAt = nil
+        finishedAt = nil
+        message = "Cleared."
+    }
+
+    // MARK: - Pass lifecycle
+
+    private func launchPass(host: String, token: UUID) {
+        guard token == runToken else { return }
+        isRunning = true
         let maxHops = self.maxHops
         let queries = self.queries
         let timeout = self.timeout
@@ -65,29 +131,42 @@ final class TracerouteController: ObservableObject, @unchecked Sendable {
                     DispatchQueue.main.async { self.append(hop) }
                 }
             )
-            DispatchQueue.main.async { self.finish(outcome) }
+            DispatchQueue.main.async { self.completePass(outcome, host: host, token: token) }
         }
     }
 
-    func stop() {
-        task?.cancel()
+    private func completePass(_ outcome: TracerouteOutcome, host: String, token: UUID) {
+        guard token == runToken else { return }
         task = nil
-        DispatchQueue.main.async {
-            self.isRunning = false
-            self.finishedAt = Date()
-            self.message = "Stopped — \(self.hops.count) hop(s) traced."
+        rounds += 1
+        resolvedIP = outcome.resolvedIP ?? resolvedIP
+
+        if continuous {
+            message = "Round \(rounds) complete — next pass in \(Int(interval))s…"
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.runToken == token else { return }
+                self.pauseItem = nil
+                if self.continuous {
+                    self.hops = []
+                    self.message = "Round \(self.rounds + 1) — tracing \(host)…"
+                    self.launchPass(host: host, token: token)
+                } else {
+                    self.isRunning = false
+                    self.finishedAt = Date()
+                    self.message = "Continuous tracing stopped after \(self.rounds) round(s)."
+                }
+            }
+            pauseItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
+        } else {
+            isRunning = false
+            finishedAt = Date()
+            let responded = hops.filter { !$0.isTimeout }.count
+            let result = outcome.reachedTarget
+                ? "target reached"
+                : "target not reached within \(maxHops) hops"
+            message = "Trace complete — \(hops.count) hop(s), \(responded) responding, \(result)."
         }
-    }
-
-    func toggle() { isRunning ? stop() : start() }
-
-    func clear() {
-        guard !isRunning else { return }
-        hops = []
-        resolvedIP = nil
-        startedAt = nil
-        finishedAt = nil
-        message = "Cleared."
     }
 
     // MARK: - Main-thread state updates
@@ -99,19 +178,13 @@ final class TracerouteController: ObservableObject, @unchecked Sendable {
         } else {
             hops.append(hop)
         }
+
+        var aggregate = statsStore[hop.ttl] ?? HopLatencyStats(ttl: hop.ttl)
+        aggregate.merge(hop)
+        statsStore[hop.ttl] = aggregate
+        stats = statsStore.values.sorted { $0.ttl < $1.ttl }
+
         message = "Tracing route to \(tracedTarget)… \(hops.count) hop(s) so far."
-    }
-
-    private func finish(_ outcome: TracerouteOutcome) {
-        isRunning = false
-        finishedAt = Date()
-        resolvedIP = outcome.resolvedIP ?? resolvedIP
-
-        let responded = hops.filter { !$0.isTimeout }.count
-        let result = outcome.reachedTarget
-            ? "target reached"
-            : "target not reached within \(maxHops) hops"
-        message = "Trace complete — \(hops.count) hop(s), \(responded) responding, \(result)."
     }
 
     // MARK: - Reports
@@ -125,7 +198,9 @@ final class TracerouteController: ObservableObject, @unchecked Sendable {
                          maxHops: maxHops,
                          queries: queries,
                          timeout: timeout,
-                         hops: hops)
+                         hops: hops,
+                         stats: stats,
+                         rounds: max(1, rounds))
     }
 
     func exportReportHTML() {
