@@ -192,6 +192,82 @@ enum HeadlessTest {
         }
     }
 
+    // MARK: - Traceroute mode
+
+    static func runTraceIfRequested(_ argv: [String]) -> Bool {
+        guard let index = argv.firstIndex(of: "--trace"), index + 1 < argv.count else {
+            return false
+        }
+
+        func value(_ flag: String) -> String? {
+            guard let i = argv.firstIndex(of: flag), i + 1 < argv.count else { return nil }
+            return argv[i + 1]
+        }
+
+        runTrace(target: argv[index + 1],
+                 maxHops: value("--max-hops").flatMap(Int.init) ?? 30,
+                 queries: value("--queries").flatMap(Int.init) ?? 3,
+                 timeout: value("--trace-timeout").flatMap(Double.init) ?? 2,
+                 reportPath: value("--report"),
+                 csvPath: value("--csv"))
+        return true
+    }
+
+    private static func runTrace(target: String, maxHops: Int, queries: Int,
+                                 timeout: Double, reportPath: String?, csvPath: String?) {
+        let controller = TracerouteController()
+        controller.target = target
+        controller.maxHops = maxHops
+        controller.queries = queries
+        controller.timeout = timeout
+
+        print("PingViewScan headless traceroute")
+        print("  target:  \(target)")
+        print("  max:     \(maxHops) hops   probes: \(queries)   timeout: \(timeout)s")
+        print("")
+
+        controller.start()
+
+        let keepAlive = Timer(timeInterval: 0.05, repeats: true) { _ in }
+        RunLoop.main.add(keepAlive, forMode: .common)
+
+        var emitted = 0
+        while controller.isRunning {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+            if controller.hops.count != emitted {
+                emitted = controller.hops.count
+                if let hop = controller.hops.last {
+                    let rtt = hop.minRtt.map { String(format: "%6.1f ms", $0) } ?? "  timeout "
+                    print(String(format: "  %2d  %-40@ %@", hop.ttl, hop.displayHost as NSString, rtt))
+                }
+            }
+        }
+        keepAlive.invalidate()
+
+        print("")
+        print(controller.message)
+
+        let report = controller.makeReport()
+        if let reportPath {
+            do {
+                try TracerouteReportExporter.html(report).write(toFile: reportPath, atomically: true, encoding: .utf8)
+                print("HTML report written: \(reportPath)")
+            } catch {
+                print("Failed to write report: \(error.localizedDescription)")
+            }
+        }
+        if let csvPath {
+            do {
+                try TracerouteReportExporter.csv(report).write(toFile: csvPath, atomically: true, encoding: .utf8)
+                print("CSV written: \(csvPath)")
+            } catch {
+                print("Failed to write CSV: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Formatting
+
     private static func scanRow(_ cells: [String]) -> String {
         let widths = [16, 26, 9, 40]
         var out = ""
@@ -201,8 +277,6 @@ enum HeadlessTest {
         }
         return out
     }
-
-    // MARK: - Formatting
 
     private static func ms(_ value: Double?) -> String {
         value.map { String(format: "%.1f", $0) } ?? "-"

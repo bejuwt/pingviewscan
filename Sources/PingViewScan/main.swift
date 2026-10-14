@@ -11,6 +11,11 @@ if HeadlessTest.runScanIfRequested(CommandLine.arguments) {
     exit(0)
 }
 
+// Headless traceroute test: `PingViewScan --trace 1.1.1.1 --report out.html`
+if HeadlessTest.runTraceIfRequested(CommandLine.arguments) {
+    exit(0)
+}
+
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate

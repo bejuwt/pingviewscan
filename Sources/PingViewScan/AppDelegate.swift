@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private let controller = PingController()
     private let scanController = ScanController()
+    private let tracerouteController = TracerouteController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -13,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let root = RootView()
             .environmentObject(controller)
             .environmentObject(scanController)
+            .environmentObject(tracerouteController)
 
         let hosting = NSHostingView(rootView: root)
         window = NSWindow(
@@ -39,6 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleScan() { scanController.toggle() }
     @objc private func exportScanReport() { scanController.exportReportHTML() }
     @objc private func exportScanCSV() { scanController.exportCSV() }
+    @objc private func toggleTraceroute() { tracerouteController.toggle() }
+    @objc private func exportTracerouteReport() { tracerouteController.exportReportHTML() }
+    @objc private func exportTracerouteCSV() { tracerouteController.exportCSV() }
 
     // MARK: - Menu
 
@@ -85,6 +90,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scanMenu.addItem(withTitle: "Export Scan CSV…",
                          action: #selector(exportScanCSV), keyEquivalent: "").target = self
         scanItem.submenu = scanMenu
+
+        let traceItem = NSMenuItem()
+        mainMenu.addItem(traceItem)
+        let traceMenu = NSMenu(title: "Traceroute")
+        traceMenu.addItem(withTitle: "Start / Stop Trace",
+                          action: #selector(toggleTraceroute), keyEquivalent: "").target = self
+        traceMenu.addItem(withTitle: "Export Trace Report…",
+                          action: #selector(exportTracerouteReport), keyEquivalent: "").target = self
+        traceMenu.addItem(withTitle: "Export Trace CSV…",
+                          action: #selector(exportTracerouteCSV), keyEquivalent: "").target = self
+        traceItem.submenu = traceMenu
 
         let editItem = NSMenuItem()
         mainMenu.addItem(editItem)

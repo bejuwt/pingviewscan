@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Three-tab shell: continuous ping monitoring, IP-block discovery and subnet math.
+/// Four-tab shell: ping monitoring, IP-block discovery, subnet math and traceroute.
 struct RootView: View {
     var body: some View {
         TabView {
@@ -12,6 +12,9 @@ struct RootView: View {
 
             SubnetView()
                 .tabItem { Label("Subnet Calculator", systemImage: "number.square") }
+
+            TracerouteView()
+                .tabItem { Label("Traceroute", systemImage: "point.3.connected.trianglepath.dotted") }
         }
         .padding(.top, 4)
         .frame(minWidth: 980, minHeight: 640)
