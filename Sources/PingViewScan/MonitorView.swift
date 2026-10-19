@@ -6,6 +6,7 @@ struct MonitorView: View {
     @State private var newHost = ""
     @State private var selection: Set<UUID> = []
     @State private var chartMode: ChartMode = .latency
+    @State private var timeframe: ChartTimeframe = .all
     @State private var showingAddSheet = false
 
     var body: some View {
@@ -175,6 +176,18 @@ struct MonitorView: View {
                 .labelsHidden()
                 .frame(width: 240)
 
+                HStack(spacing: 6) {
+                    Text("Range").font(.caption).foregroundStyle(.secondary)
+                    Picker("Range", selection: $timeframe) {
+                        ForEach(ChartTimeframe.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
+                    .help("Adjust the visible time range of the graph")
+                }
+
                 Spacer()
 
                 Text(controller.statusMessage)
@@ -186,9 +199,9 @@ struct MonitorView: View {
             Group {
                 switch chartMode {
                 case .latency:
-                    LatencyChartView(hosts: controller.hosts, recent: controller.recentSamples)
+                    LatencyChartView(hosts: controller.hosts, history: controller.history, timeframe: timeframe)
                 case .loss:
-                    LossChartView(hosts: controller.hosts, recent: controller.recentSamples)
+                    LossChartView(hosts: controller.hosts, history: controller.history, timeframe: timeframe)
                 }
             }
             .frame(height: 210)
