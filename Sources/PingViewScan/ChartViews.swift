@@ -34,27 +34,35 @@ enum ChartTimeframe: String, CaseIterable, Identifiable {
     }
 }
 
-/// Caps how many points a single series draws. Long sessions are evenly
-/// decimated so the whole window stays visible without overwhelming Charts.
+/// Caps how many points a single series draws, and how many points all series
+/// draw together. Long sessions are evenly decimated so the whole window stays
+/// visible without overwhelming Charts. The per-series limit shrinks as the
+/// host count grows so the total mark count stays bounded — Swift Charts slows
+/// down sharply once a chart holds tens of thousands of marks.
 private let maxPointsPerSeries = 1500
+private let totalPointBudget = 3000
 
-private func downsample(_ samples: [PingSample], limit: Int = maxPointsPerSeries) -> [PingSample] {
-    guard samples.count > limit, limit > 2 else { return samples }
-    let stride = Double(samples.count - 1) / Double(limit - 1)
-    var result: [PingSample] = []
+private func perSeriesLimit(hostCount: Int) -> Int {
+    max(100, min(maxPointsPerSeries, totalPointBudget / max(1, hostCount)))
+}
+
+private func downsample<T>(_ items: [T], limit: Int) -> [T] {
+    guard items.count > limit, limit > 2 else { return items }
+    let stride = Double(items.count - 1) / Double(limit - 1)
+    var result: [T] = []
     result.reserveCapacity(limit)
     var position = 0.0
     for _ in 0..<limit {
-        result.append(samples[Int(position.rounded())])
+        result.append(items[Int(position.rounded())])
         position += stride
     }
     return result
 }
 
 /// Windows a host's full history down to the samples inside the timeframe.
-private func visibleSamples(_ samples: [PingSample], window: ChartTimeframe, latest: Date) -> [PingSample] {
+private func visibleSamples(_ samples: [PingSample], window: ChartTimeframe, latest: Date, limit: Int) -> [PingSample] {
     guard let cutoff = window.cutoff(latest: latest) else {
-        return downsample(samples)
+        return downsample(samples, limit: limit)
     }
     // Samples are appended in time order, so binary-search the first one in range.
     var low = 0
@@ -63,7 +71,7 @@ private func visibleSamples(_ samples: [PingSample], window: ChartTimeframe, lat
         let mid = (low + high) / 2
         if samples[mid].timestamp < cutoff { low = mid + 1 } else { high = mid }
     }
-    return downsample(Array(samples[low...]))
+    return downsample(Array(samples[low...]), limit: limit)
 }
 
 /// Live latency graph: one line per host, drawn from the session history.
@@ -89,10 +97,11 @@ struct LatencyChartView: View {
 
     private var series: (points: [Point], lost: [Point]) {
         let reference = latest
+        let limit = perSeriesLimit(hostCount: hosts.count)
         var points: [Point] = []
         var lost: [Point] = []
         for host in hosts {
-            let samples = visibleSamples(history[host.id] ?? [], window: timeframe, latest: reference)
+            let samples = visibleSamples(history[host.id] ?? [], window: timeframe, latest: reference, limit: limit)
             for sample in samples {
                 if let rtt = sample.rtt {
                     points.append(Point(time: sample.timestamp, rtt: rtt, host: host.address))
@@ -154,20 +163,23 @@ struct LossChartView: View {
     private var points: [Point] {
         let reference = latest
         let cutoff = timeframe.cutoff(latest: reference)
+        let limit = perSeriesLimit(hostCount: hosts.count)
         var result: [Point] = []
         for host in hosts {
             let samples = history[host.id] ?? []
             var sent = 0
             var lost = 0
+            var hostPoints: [Point] = []
             for sample in samples {
                 sent += 1
                 if sample.isLost { lost += 1 }
                 // Only emit points inside the window, but keep counting from the
                 // true session start so the value stays cumulative.
                 if let cutoff, sample.timestamp < cutoff { continue }
-                let percent = sent > 0 ? Double(lost) / Double(sent) * 100.0 : 0
-                result.append(Point(time: sample.timestamp, percent: percent, host: host.address))
+                let percent = Double(lost) / Double(sent) * 100.0
+                hostPoints.append(Point(time: sample.timestamp, percent: percent, host: host.address))
             }
+            result.append(contentsOf: downsample(hostPoints, limit: limit))
         }
         return result
     }
