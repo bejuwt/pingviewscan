@@ -12,6 +12,7 @@ struct MonitorView: View {
 
     @State private var newHost = ""
     @State private var selection: Set<UUID> = []
+    @State private var sortOrder: [KeyPathComparator<Host>] = []
     @State private var chartMode: ChartMode = .latency
     @State private var timeframe: ChartTimeframe = .all
     @State private var hostFilter: HostFilter = .all
@@ -114,8 +115,8 @@ struct MonitorView: View {
     // MARK: - Table
 
     private var hostTable: some View {
-        Table(controller.hosts, selection: $selection) {
-            TableColumn("Host") { host in
+        Table(displayedHosts, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Host", value: \.address) { host in
                 HStack(spacing: 7) {
                     Circle().fill(statusColor(host)).frame(width: 9, height: 9)
                     Text(host.address)
@@ -123,37 +124,40 @@ struct MonitorView: View {
             }
             .width(min: 170, ideal: 230)
 
-            TableColumn("IP") { host in
+            TableColumn("IP", value: \.ipSortKey) { host in
                 Text(host.ip ?? "—").font(.system(.body, design: .monospaced))
             }
             .width(min: 110, ideal: 150)
 
-            TableColumn("Hostname") { host in
+            TableColumn("Hostname", value: \.hostnameSortKey) { host in
                 Text(host.hostname ?? "—")
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             .width(min: 140, ideal: 200)
 
-            TableColumn("Sent / Recv / Lost") { host in
+            TableColumn("Sent / Recv / Lost", value: \.stats.sent) { host in
                 Text("\(host.stats.sent) / \(host.stats.received) / \(host.stats.lost)")
                     .font(.system(.body, design: .monospaced))
             }
             .width(min: 120, ideal: 140)
 
-            TableColumn("Loss %") { host in
+            TableColumn("Loss %", value: \.stats.lossPercent) { host in
                 Text(String(format: "%.1f%%", host.stats.lossPercent))
                     .foregroundStyle(host.stats.lossPercent > 0 ? .red : .primary)
             }
             .width(64)
 
-            TableColumn("Last / Min / Max") { host in
+            TableColumn("Last / Min / Max", value: \.lastSortKey) { host in
                 Text("\(formatRTT(host.stats.last)) / \(formatRTT(host.stats.minRtt)) / \(formatRTT(host.stats.maxRtt))")
                     .font(.system(.body, design: .monospaced))
             }
             .width(min: 150, ideal: 180)
 
-            TableColumn("Avg") { Text(formatRTT($0.stats.avgRtt)) }.width(70)
+            TableColumn("Avg", value: \.avgSortKey) { host in
+                Text(formatRTT(host.stats.avgRtt))
+            }
+            .width(70)
         }
         .frame(minHeight: 220)
         .overlay {
@@ -167,6 +171,26 @@ struct MonitorView: View {
                 }
             }
         }
+    }
+
+    /// Hosts shown in the table, honouring the active column sort.
+    /// Empty `sortOrder` keeps the original insertion order; ties fall back
+    /// to insertion order so the result stays stable across pings.
+    private var displayedHosts: [Host] {
+        let base = controller.hosts
+        guard !sortOrder.isEmpty else { return base }
+        return base.enumerated()
+            .sorted { lhs, rhs in
+                for comparator in sortOrder {
+                    switch comparator.compare(lhs.element, rhs.element) {
+                    case .orderedAscending: return true
+                    case .orderedDescending: return false
+                    case .orderedSame: continue
+                    }
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     // MARK: - Charts
