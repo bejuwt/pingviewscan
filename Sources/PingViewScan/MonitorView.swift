@@ -13,6 +13,7 @@ struct MonitorView: View {
     @State private var newHost = ""
     @State private var selection: Set<UUID> = []
     @State private var sortOrder: [KeyPathComparator<Host>] = []
+    @State private var tableHosts: [Host] = []
     @State private var chartMode: ChartMode = .latency
     @State private var timeframe: ChartTimeframe = .all
     @State private var hostFilter: HostFilter = .all
@@ -171,13 +172,14 @@ struct MonitorView: View {
                 }
             }
         }
+        .task { await refreshTableHosts() }
     }
 
     /// Hosts shown in the table, honouring the active column sort.
     /// Empty `sortOrder` keeps the original insertion order; ties fall back
     /// to insertion order so the result stays stable across pings.
     private var displayedHosts: [Host] {
-        let base = controller.hosts
+        let base = tableHosts
         guard !sortOrder.isEmpty else { return base }
         return base.enumerated()
             .sorted { lhs, rhs in
@@ -191,6 +193,24 @@ struct MonitorView: View {
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
+    }
+
+    /// Pushes the live host list into the table on a throttle.
+    ///
+    /// `controller.hosts` is republished on every ping sample for every host,
+    /// so handing it straight to the `Table` rebuilds the rows many times a
+    /// second. Under that churn SwiftUI's table can mis-map a click to a row,
+    /// which made row selection unreliable while pinging. Snapshotting on a
+    /// timer caps table updates at 10 Hz and skips refreshes where nothing
+    /// changed, so a click always resolves against a stable set of rows.
+    private func refreshTableHosts() async {
+        tableHosts = controller.hosts
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if tableHosts != controller.hosts {
+                tableHosts = controller.hosts
+            }
+        }
     }
 
     // MARK: - Charts
