@@ -35,43 +35,90 @@ enum ChartTimeframe: String, CaseIterable, Identifiable {
 }
 
 /// Caps how many points a single series draws, and how many points all series
-/// draw together. Long sessions are evenly decimated so the whole window stays
-/// visible without overwhelming Charts. The per-series limit shrinks as the
-/// host count grows so the total mark count stays bounded — Swift Charts slows
-/// down sharply once a chart holds tens of thousands of marks.
+/// draw together. Long sessions are decimated so the whole window stays visible
+/// without overwhelming Charts, and the per-series limit shrinks as the host
+/// count grows so the total mark count stays bounded — Swift Charts slows down
+/// sharply once a chart holds tens of thousands of marks.
 private let maxPointsPerSeries = 1500
 private let totalPointBudget = 3000
+
+/// The smallest time bucket a series is decimated into. Buckets are aligned to
+/// absolute time, so this only bounds how fine the decimation can get.
+private let minBucketSeconds: TimeInterval = 0.5
 
 private func perSeriesLimit(hostCount: Int) -> Int {
     max(100, min(maxPointsPerSeries, totalPointBudget / max(1, hostCount)))
 }
 
-private func downsample<T>(_ items: [T], limit: Int) -> [T] {
-    guard items.count > limit, limit > 2 else { return items }
-    let stride = Double(items.count - 1) / Double(limit - 1)
+/// Width of the time buckets used to decimate one series, chosen so a visible
+/// window holds roughly `limit` buckets.
+///
+/// A fixed window has a constant width, so the bucket grid never moves. The
+/// "All" range has no fixed length, so its ideal width would grow with the
+/// session and drag the whole grid along with it every update — reintroducing
+/// the churn. Quantizing to a coarse ladder keeps the width (and grid) put for
+/// long stretches, so the selection stays stable.
+private func bucketWidth(window: ChartTimeframe, span: TimeInterval, limit: Int) -> TimeInterval {
+    let target = max(minBucketSeconds, (window.seconds ?? span) / Double(max(1, limit)))
+    guard window.seconds == nil else { return target }
+    return ladderWidth(atLeast: target)
+}
+
+/// Smallest "nice" bucket width that is at least `target`.
+private func ladderWidth(atLeast target: TimeInterval) -> TimeInterval {
+    let ladder: [TimeInterval] = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600,
+                                  1800, 3600, 7200, 21600, 43200, 86400]
+    for width in ladder where width >= target { return width }
+    return ladder[ladder.count - 1]
+}
+
+/// Decimates a time-ordered series to at most roughly `limit` points by keeping
+/// the newest sample in each fixed-width, absolutely-aligned time bucket.
+///
+/// This must stay *stable* across renders: an index-based decimation shifts the
+/// whole selection every time the sample count changes, so Charts rebuilds (and
+/// visibly flickers) every line on each refresh — most noticeable once a window
+/// is long enough to trigger decimation. Because the bucket edges never move as
+/// the visible window slides, existing points keep their identity and Charts
+/// only adds the newest points and drops the oldest.
+private func decimate<T>(_ items: [T], time: (T) -> Date, bucketSeconds: TimeInterval, limit: Int) -> [T] {
+    guard items.count > limit, bucketSeconds > 0 else { return items }
     var result: [T] = []
-    result.reserveCapacity(limit)
-    var position = 0.0
-    for _ in 0..<limit {
-        result.append(items[Int(position.rounded())])
-        position += stride
+    result.reserveCapacity(limit + 2)
+    var currentBucket = Int(floor(time(items[0]).timeIntervalSinceReferenceDate / bucketSeconds))
+    var newestInBucket = items[0]
+    for item in items.dropFirst() {
+        let bucket = Int(floor(time(item).timeIntervalSinceReferenceDate / bucketSeconds))
+        if bucket == currentBucket {
+            newestInBucket = item
+        } else {
+            result.append(newestInBucket)
+            currentBucket = bucket
+            newestInBucket = item
+        }
     }
+    result.append(newestInBucket)
     return result
 }
 
 /// Windows a host's full history down to the samples inside the timeframe.
 private func visibleSamples(_ samples: [PingSample], window: ChartTimeframe, latest: Date, limit: Int) -> [PingSample] {
-    guard let cutoff = window.cutoff(latest: latest) else {
-        return downsample(samples, limit: limit)
+    let scoped: ArraySlice<PingSample>
+    if let cutoff = window.cutoff(latest: latest) {
+        // Samples are appended in time order, so binary-search the first one in range.
+        var low = 0
+        var high = samples.count
+        while low < high {
+            let mid = (low + high) / 2
+            if samples[mid].timestamp < cutoff { low = mid + 1 } else { high = mid }
+        }
+        scoped = samples[low...]
+    } else {
+        scoped = samples[...]
     }
-    // Samples are appended in time order, so binary-search the first one in range.
-    var low = 0
-    var high = samples.count
-    while low < high {
-        let mid = (low + high) / 2
-        if samples[mid].timestamp < cutoff { low = mid + 1 } else { high = mid }
-    }
-    return downsample(Array(samples[low...]), limit: limit)
+    guard let first = scoped.first, let last = scoped.last else { return [] }
+    let width = bucketWidth(window: window, span: last.timestamp.timeIntervalSince(first.timestamp), limit: limit)
+    return decimate(Array(scoped), time: { $0.timestamp }, bucketSeconds: width, limit: limit)
 }
 
 /// Live latency graph: one line per host, drawn from the session history.
@@ -179,7 +226,9 @@ struct LossChartView: View {
                 let percent = Double(lost) / Double(sent) * 100.0
                 hostPoints.append(Point(time: sample.timestamp, percent: percent, host: host.address))
             }
-            result.append(contentsOf: downsample(hostPoints, limit: limit))
+            guard let first = hostPoints.first, let last = hostPoints.last else { continue }
+            let width = bucketWidth(window: timeframe, span: last.time.timeIntervalSince(first.time), limit: limit)
+            result.append(contentsOf: decimate(hostPoints, time: { $0.time }, bucketSeconds: width, limit: limit))
         }
         return result
     }
