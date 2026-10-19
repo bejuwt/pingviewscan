@@ -24,6 +24,16 @@ final class PingController: ObservableObject, @unchecked Sendable {
     private var sessionStart: Date?
     private var sessionEnd: Date?
 
+    /// Buffered ping results awaiting publication. Samples arrive as fast as
+    /// hosts × interval, and republishing the host list and full history on
+    /// every one of them makes the UI rebuild the table and the live charts
+    /// hundreds of times a second with many hosts. Results are coalesced and
+    /// flushed at most `flushInterval` apart, so the UI updates ~5×/sec no
+    /// matter how many hosts are being pinged.
+    private var pendingOutcomes: [(hostID: UUID, outcome: PingOutcome)] = []
+    private var flushScheduled = false
+    private let flushInterval: TimeInterval = 0.2
+
     // MARK: - Host management
 
     func addHosts(_ raw: String) {
@@ -56,6 +66,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
     }
 
     func removeHosts(ids: Set<UUID>) {
+        flushPending()
         for id in ids {
             tasks[id]?.cancel()
             tasks[id] = nil
@@ -70,6 +81,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
         stop()
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
+        pendingOutcomes.removeAll()
         hosts.removeAll()
         history.removeAll()
         sequences.removeAll()
@@ -80,6 +92,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
 
     /// Reset counters and history but keep the host list.
     func clearStatistics() {
+        pendingOutcomes.removeAll()
         for index in hosts.indices { hosts[index].stats.reset() }
         history.removeAll()
         sequences.removeAll()
@@ -110,6 +123,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
         sessionEnd = Date()
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
+        flushPending()
         statusMessage = "Stopped. \(totalSamples) sample\(totalSamples == 1 ? "" : "s") collected."
     }
 
@@ -136,25 +150,51 @@ final class PingController: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Queues a ping result for the next coalesced UI update.
     private func record(hostID: UUID, outcome: PingOutcome) {
-        guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
+        pendingOutcomes.append((hostID, outcome))
+        scheduleFlush()
+    }
 
-        let sequence = (sequences[hostID] ?? 0) + 1
-        sequences[hostID] = sequence
-
-        let sample = PingSample(id: UUID(), sequence: sequence, timestamp: Date(), rtt: outcome.rtt)
-
-        var host = hosts[index]
-        if host.ip == nil, let ip = outcome.ip {
-            host.ip = ip
-            resolveHostname(hostID: hostID, ip: ip)
+    private func scheduleFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + flushInterval) { [weak self] in
+            self?.flushPending()
         }
-        host.stats.add(rtt: outcome.rtt)
-        hosts[index] = host
+    }
 
-        var samples = history[hostID] ?? []
-        samples.append(sample)
-        history[hostID] = samples
+    /// Applies every buffered ping result in a single `hosts`/`history`
+    /// publish, so SwiftUI renders the batch once instead of once per sample.
+    private func flushPending() {
+        flushScheduled = false
+        guard !pendingOutcomes.isEmpty else { return }
+
+        let batch = pendingOutcomes
+        pendingOutcomes.removeAll(keepingCapacity: true)
+
+        var updatedHosts = hosts
+        var updatedHistory = history
+        for (hostID, outcome) in batch {
+            guard let index = updatedHosts.firstIndex(where: { $0.id == hostID }) else { continue }
+
+            let sequence = (sequences[hostID] ?? 0) + 1
+            sequences[hostID] = sequence
+
+            let sample = PingSample(id: UUID(), sequence: sequence, timestamp: Date(), rtt: outcome.rtt)
+
+            var host = updatedHosts[index]
+            if host.ip == nil, let ip = outcome.ip {
+                host.ip = ip
+                resolveHostname(hostID: hostID, ip: ip)
+            }
+            host.stats.add(rtt: outcome.rtt)
+            updatedHosts[index] = host
+            updatedHistory[hostID, default: []].append(sample)
+        }
+
+        hosts = updatedHosts
+        history = updatedHistory
     }
 
     private func resolveHostname(hostID: UUID, ip: String) {
@@ -171,6 +211,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
     // MARK: - Reports
 
     func makeReport() -> SessionReport {
+        flushPending()
         let hostReports = hosts.map { host in
             HostReport(address: host.address,
                        ip: host.ip,
