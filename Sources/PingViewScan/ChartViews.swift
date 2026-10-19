@@ -191,7 +191,7 @@ struct LossChartView: View {
     }
 }
 
-private struct PlaceholderChart: View {
+struct PlaceholderChart: View {
     let message: String
     var body: some View {
         ZStack {

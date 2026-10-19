@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// Which hosts are drawn in the live graph.
+enum HostFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case selected = "Selected"
+    var id: String { rawValue }
+}
+
 struct MonitorView: View {
     @EnvironmentObject private var controller: PingController
 
@@ -7,6 +14,7 @@ struct MonitorView: View {
     @State private var selection: Set<UUID> = []
     @State private var chartMode: ChartMode = .latency
     @State private var timeframe: ChartTimeframe = .all
+    @State private var hostFilter: HostFilter = .all
     @State private var showingAddSheet = false
 
     var body: some View {
@@ -188,6 +196,19 @@ struct MonitorView: View {
                     .help("Adjust the visible time range of the graph")
                 }
 
+                HStack(spacing: 6) {
+                    Text("Hosts").font(.caption).foregroundStyle(.secondary)
+                    Picker("Hosts", selection: $hostFilter) {
+                        ForEach(HostFilter.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 150)
+                    .help("Show every host, or only the rows selected in the table")
+                }
+
                 Spacer()
 
                 Text(controller.statusMessage)
@@ -197,16 +218,26 @@ struct MonitorView: View {
             }
 
             Group {
-                switch chartMode {
-                case .latency:
-                    LatencyChartView(hosts: controller.hosts, history: controller.history, timeframe: timeframe)
-                case .loss:
-                    LossChartView(hosts: controller.hosts, history: controller.history, timeframe: timeframe)
+                if hostFilter == .selected && chartHosts.isEmpty {
+                    PlaceholderChart(message: "No hosts selected — select rows in the table to chart them.")
+                } else {
+                    switch chartMode {
+                    case .latency:
+                        LatencyChartView(hosts: chartHosts, history: controller.history, timeframe: timeframe)
+                    case .loss:
+                        LossChartView(hosts: chartHosts, history: controller.history, timeframe: timeframe)
+                    }
                 }
             }
             .frame(height: 210)
         }
         .padding(12)
+    }
+
+    /// Hosts to draw in the graph, honouring the "Selected" view filter.
+    private var chartHosts: [Host] {
+        guard hostFilter == .selected else { return controller.hosts }
+        return controller.hosts.filter { selection.contains($0.id) }
     }
 
     // MARK: - Helpers
