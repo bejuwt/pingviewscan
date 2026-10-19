@@ -88,6 +88,8 @@ enum HeadlessTest {
             ]))
         }
 
+        print("History samples retained: \(controller.totalSamples)")
+
         if let reportPath {
             let html = ReportExporter.html(report)
             do {

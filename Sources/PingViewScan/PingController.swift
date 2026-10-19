@@ -10,8 +10,9 @@ import UniformTypeIdentifiers
 final class PingController: ObservableObject, @unchecked Sendable {
 
     @Published private(set) var hosts: [Host] = []
-    /// Capped, most-recent samples per host used to drive the live charts.
-    @Published private(set) var recentSamples: [UUID: [PingSample]] = [:]
+    /// Complete per-host sample history for the session, used for the live
+    /// charts and reports. The charts apply their own time-window filter.
+    @Published private(set) var history: [UUID: [PingSample]] = [:]
 
     @Published var isRunning = false
     @Published var interval: Double = 1.0
@@ -19,12 +20,9 @@ final class PingController: ObservableObject, @unchecked Sendable {
     @Published var statusMessage = "Ready. Add a host and press Start."
 
     private var tasks: [UUID: Task<Void, Never>] = [:]
-    private var fullHistory: [UUID: [PingSample]] = [:]
     private var sequences: [UUID: Int] = [:]
     private var sessionStart: Date?
     private var sessionEnd: Date?
-
-    private let recentLimit = 300
 
     // MARK: - Host management
 
@@ -61,8 +59,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
         for id in ids {
             tasks[id]?.cancel()
             tasks[id] = nil
-            fullHistory[id] = nil
-            recentSamples[id] = nil
+            history[id] = nil
             sequences[id] = nil
         }
         hosts.removeAll { ids.contains($0.id) }
@@ -74,8 +71,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
         hosts.removeAll()
-        fullHistory.removeAll()
-        recentSamples.removeAll()
+        history.removeAll()
         sequences.removeAll()
         sessionStart = nil
         sessionEnd = nil
@@ -85,8 +81,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
     /// Reset counters and history but keep the host list.
     func clearStatistics() {
         for index in hosts.indices { hosts[index].stats.reset() }
-        fullHistory.removeAll()
-        recentSamples.removeAll()
+        history.removeAll()
         sequences.removeAll()
         sessionStart = isRunning ? Date() : nil
         statusMessage = "Statistics cleared."
@@ -120,7 +115,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
 
     func toggle() { isRunning ? stop() : start() }
 
-    var totalSamples: Int { hosts.reduce(0) { $0 + (fullHistory[$1.id]?.count ?? 0) } }
+    var totalSamples: Int { hosts.reduce(0) { $0 + (history[$1.id]?.count ?? 0) } }
 
     // MARK: - Ping loop
 
@@ -157,14 +152,9 @@ final class PingController: ObservableObject, @unchecked Sendable {
         host.stats.add(rtt: outcome.rtt)
         hosts[index] = host
 
-        var history = fullHistory[hostID] ?? []
-        history.append(sample)
-        fullHistory[hostID] = history
-
-        var recent = recentSamples[hostID] ?? []
-        recent.append(sample)
-        if recent.count > recentLimit { recent.removeFirst(recent.count - recentLimit) }
-        recentSamples[hostID] = recent
+        var samples = history[hostID] ?? []
+        samples.append(sample)
+        history[hostID] = samples
     }
 
     private func resolveHostname(hostID: UUID, ip: String) {
@@ -185,7 +175,7 @@ final class PingController: ObservableObject, @unchecked Sendable {
             HostReport(address: host.address,
                        ip: host.ip,
                        stats: host.stats,
-                       samples: fullHistory[host.id] ?? [])
+                       samples: history[host.id] ?? [])
         }
         return SessionReport(generated: Date(),
                              started: sessionStart,
