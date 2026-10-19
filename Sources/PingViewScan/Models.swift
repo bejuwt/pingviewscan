@@ -53,6 +53,14 @@ struct Host: Identifiable {
         self.id = id
         self.address = address
     }
+
+    // Non-optional sort keys for the host table's sortable columns.
+    // SwiftUI's `TableColumn(value:)` cannot sort on `Optional`, so missing
+    // values map to a value that sorts last when ascending.
+    var ipSortKey: String { ip ?? "" }
+    var hostnameSortKey: String { hostname ?? "" }
+    var lastSortKey: Double { stats.last ?? .greatestFiniteMagnitude }
+    var avgSortKey: Double { stats.avgRtt ?? .greatestFiniteMagnitude }
 }
 
 /// Snapshot of a finished / in-progress session, used by the report exporter.
