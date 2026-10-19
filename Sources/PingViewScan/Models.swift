@@ -12,7 +12,7 @@ struct PingSample: Identifiable, Hashable {
 }
 
 /// Aggregate counters for a host for the current session.
-struct HostStats {
+struct HostStats: Equatable {
     var sent: Int = 0
     var received: Int = 0
     var last: Double?
@@ -41,7 +41,7 @@ struct HostStats {
 }
 
 /// A monitored host shown in the table.
-struct Host: Identifiable {
+struct Host: Identifiable, Equatable {
     let id: UUID
     var address: String
     var ip: String?
